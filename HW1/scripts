@@ -1,0 +1,320 @@
+
+--  Очистка таблиц в обратном порядке зависимостей (от дочерних к родительским)
+DROP TABLE IF EXISTS raw_order_items;
+DROP TABLE IF EXISTS raw_orders;
+DROP TABLE IF EXISTS raw_products;
+DROP TABLE IF EXISTS raw_customers;
+
+-- Таблица клиентов (сырые данные из data/customers.csv)
+
+CREATE TABLE raw_customers (
+    customer_id INT PRIMARY KEY,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
+    gender VARCHAR(50),
+    dob DATE,
+    job_title VARCHAR(150),
+    job_industry_category VARCHAR(100),
+    wealth_segment VARCHAR(100),
+    deceased_indicator BOOLEAN,
+    owns_car BOOLEAN,
+    address VARCHAR(255),
+    postcode VARCHAR(10),
+    state VARCHAR(50),
+    country VARCHAR(100),
+    property_valuation NUMERIC(10, 2)
+);
+
+-- Команда для быстрой загрузки CSV через терминал (psql) с относительным путём:
+-- psql -d postgres -c "\copy raw_customers FROM 'data/customers.csv' WITH (FORMAT csv, HEADER true, DELIMITER ',');"
+SELECT COUNT(*) FROM raw_customers;
+SELECT * FROM raw_customers LIMIT 10;
+
+-- Таблица продуктов (сырые данные из data/products.csv)
+
+CREATE TABLE raw_products (
+    product_id INT PRIMARY KEY,
+    brand VARCHAR(100),
+    product_line VARCHAR(100),
+    product_class VARCHAR(50),
+    product_size VARCHAR(50),
+    list_price NUMERIC(10, 2),
+    standard_cost NUMERIC(10, 2)
+);
+
+-- Команда для быстрой загрузки CSV через терминал (psql) с относительным путём:
+-- psql -d postgres -c "\copy raw_products FROM 'data/products.csv' WITH (FORMAT csv, HEADER true, DELIMITER ',');"
+
+SELECT COUNT(*) FROM raw_products;
+SELECT * FROM raw_products LIMIT 10;
+
+-- Таблица заказов (сырые данные из data/orders.csv)
+
+CREATE TABLE raw_orders (
+    order_id INT PRIMARY KEY,
+    customer_id INT REFERENCES raw_customers(customer_id),
+    order_date TIMESTAMP,
+    online_order BOOLEAN, 
+    order_status VARCHAR(50)
+);
+
+-- Команда для быстрой загрузки CSV через терминал (psql) с относительным путём:
+-- psql -d postgres -c "\copy raw_orders FROM 'data/orders.csv' WITH (FORMAT csv, HEADER true, DELIMITER ',');"
+
+SELECT COUNT(*) FROM raw_orders;
+SELECT * FROM raw_orders LIMIT 10;
+
+-- Таблица заказов (сырые данные из data/order_items.csv)
+
+CREATE TABLE raw_order_items (
+    order_item_id INT PRIMARY KEY, 
+    order_id INT REFERENCES raw_orders(order_id),
+    product_id INT REFERENCES raw_products(product_id),
+    quantity INT,
+    item_list_price_at_sale NUMERIC(10, 2),
+    item_standard_cost_at_sale NUMERIC(10, 2)
+);
+
+
+-- Команда для быстрой загрузки CSV через терминал (psql) с относительным путём:
+-- psql -d postgres -c "\copy raw_order_items FROM 'data/order_items.csv' WITH (FORMAT csv, HEADER true, DELIMITER ',');"
+
+SELECT COUNT(*) FROM raw_order_items;
+SELECT * FROM raw_order_items LIMIT 10;
+
+
+
+-- Создаёи финальные таблицы, отчистка 
+DROP TABLE IF EXISTS order_items CASCADE;
+DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS products CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
+DROP TABLE IF EXISTS states CASCADE;
+
+-- Справочник штатов и стран
+
+CREATE TABLE states (
+    state VARCHAR(50) PRIMARY KEY,
+    country VARCHAR(100) NOT NULL
+);
+
+-- Финальная таблица клиентов
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    gender VARCHAR(50),
+    dob DATE,
+    job_title VARCHAR(150),
+    job_industry_category VARCHAR(100),
+    wealth_segment VARCHAR(100),
+    deceased_indicator BOOLEAN NOT NULL,
+    owns_car BOOLEAN NOT NULL,
+    address VARCHAR(255),
+    postcode VARCHAR(10),
+    state VARCHAR(50) REFERENCES states(state),
+    property_valuation NUMERIC(10, 2)
+);
+
+-- Наполняем справочник штатов
+INSERT INTO states (state, country)
+SELECT DISTINCT state, country
+FROM raw_customers
+WHERE state IS NOT NULL;
+
+-- Наполняем таблицу клиентов (без дублирующегося столбца country)
+INSERT INTO customers (
+    customer_id, first_name, last_name, gender, dob,
+    job_title, job_industry_category, wealth_segment,
+    deceased_indicator, owns_car, address, postcode, state, property_valuation
+)
+SELECT
+    customer_id, first_name, last_name, gender, dob,
+    job_title, job_industry_category, wealth_segment,
+    deceased_indicator, owns_car, address, postcode, state, property_valuation
+FROM raw_customers;
+
+-- Финальная таблица продуктов
+CREATE TABLE products (
+    product_id INT PRIMARY KEY,
+    brand VARCHAR(100),
+    product_line VARCHAR(100),
+    product_class VARCHAR(50),
+    product_size VARCHAR(50),
+    list_price NUMERIC(10, 2) NOT NULL CHECK (list_price >= 0),
+    standard_cost NUMERIC(10, 2) CHECK (standard_cost >= 0)
+);
+
+-- Финальная таблица заказов
+CREATE TABLE orders (
+    order_id INT PRIMARY KEY,
+    customer_id INT NOT NULL REFERENCES customers(customer_id),
+    order_date TIMESTAMP NOT NULL,
+    online_order BOOLEAN,
+    order_status VARCHAR(50) NOT NULL
+);
+
+-- Финальная таблица позиций заказов
+CREATE TABLE order_items (
+    order_item_id INT PRIMARY KEY,
+    order_id INT NOT NULL REFERENCES orders(order_id),
+    product_id INT NOT NULL REFERENCES products(product_id),
+    quantity INT NOT NULL CHECK (quantity > 0),
+    item_list_price_at_sale NUMERIC(10, 2) NOT NULL CHECK (item_list_price_at_sale >= 0),
+    item_standard_cost_at_sale NUMERIC(10, 2) CHECK (item_standard_cost_at_sale >= 0)
+);
+
+-- Переносим данные
+INSERT INTO products SELECT * FROM raw_products;
+INSERT INTO orders SELECT * FROM raw_orders;
+INSERT INTO order_items SELECT * FROM raw_order_items;
+
+-- Выведите id продукта и среднюю цену продажи (item_list_price_at_sale) для 5 продуктов с самой высокой средней ценой продажи.
+SELECT product_id, AVG(item_list_price_at_sale) as avg_price
+FROM order_items 
+GROUP BY product_id
+ORDER BY avg_price DESC
+LIMIT 5;
+
+-- Рассчитайте общую стоимость заказа (item_list_price_at_sale * quantity) для каждого бренда продукта.
+
+SELECT products.brand, SUM(order_items.item_list_price_at_sale * order_items.quantity) as full_sum
+FROM order_items 
+JOIN products on order_items.product_id = products.product_id
+GROUP BY products.brand;
+
+-- Подсчитайте количество заказов за каждый месяц для каждого года. 
+-- То есть необходимо вывести год, месяц и количество заказов.
+
+SELECT EXTRACT(YEAR FROM order_date) as year, EXTRACT(MONTH FROM order_date) as month, COUNT(*) 
+FROM orders
+GROUP BY year, month
+ORDER BY year;
+
+
+-- Для каждой продуктовой линейки (product_line) найдите продукт с самой высокой стандартной стоимостью (standard_cost). 
+-- Выведите id продукта, линейку продукта и стандартную стоимость.
+
+SELECT product_id, product_line, standard_cost
+FROM products
+WHERE (product_line, standard_cost) IN (
+    SELECT product_line, MAX(standard_cost)
+    FROM products
+    GROUP BY product_line
+);
+
+-- 5. Подсчитайте количество заказов и общую стоимость заказов для каждого статуса заказа (order_status). 
+-- Общую стоимость заказа необходимо рассчитать как цену продукта на момент продажи, умноженную на 
+-- количество единиц продукта в заказе.
+
+SELECT order_status, COUNT(DISTINCT orders.order_id), SUM(order_items.item_list_price_at_sale * order_items.quantity) as full_sum
+FROM orders
+LEFT JOIN order_items ON orders.order_id = order_items.order_id
+GROUP BY orders.order_status;
+
+-- 6.Найдите клиентов, у которых нет ни одного заказа. Выведите id клиента, фамилию и имя.
+
+SELECT customers.customer_id, last_name, first_name
+FROM customers
+LEFT JOIN orders ON customers.customer_id = orders.customer_id
+WHERE orders.order_id IS NULL;
+
+
+-- 7. Для каждого штата найдите клиента с самой высокой и самой низкой оценкой стоимости имущества (property_valuation).
+-- Выведите штат, оценку стоимости имущества, фамилию и имя клиента.
+
+SELECT 
+    customers.state, 
+    customers.property_valuation, 
+    customers.last_name, 
+    customers.first_name
+FROM customers 
+JOIN (
+    SELECT 
+        state, 
+        MIN(property_valuation) AS min_valuation, 
+        MAX(property_valuation) AS max_valuation
+    FROM customers
+    WHERE state IS NOT NULL
+    GROUP BY state
+) min_max_table
+    ON customers.state = min_max_table.state 
+    AND (customers.property_valuation = min_max_table.min_valuation
+    OR customers.property_valuation = min_max_table.max_valuation)
+ORDER BY customers.state;
+
+-- 8. Найдите клиентов, которые покупали продукты только из одной продуктовой линейки (product_line). 
+-- Выведите id клиента, линейку продукта и количество заказов.
+
+SELECT 
+    orders.customer_id, 
+    MIN(products.product_line) AS product_line, 
+    COUNT(DISTINCT orders.order_id) AS order_count
+FROM orders
+JOIN order_items ON orders.order_id = order_items.order_id
+JOIN products ON order_items.product_id = products.product_id
+WHERE products.product_line IS NOT NULL
+GROUP BY orders.customer_id
+HAVING COUNT(DISTINCT products.product_line) = 1
+ORDER BY orders.customer_id;
+
+-- 9. Для каждой категории продуктов рассчитайте процент отмененных заказов (order_status = 'Cancelled').
+
+SELECT 
+    products.product_line,
+    ROUND(
+        100.0 * COUNT(DISTINCT orders.order_id) FILTER (WHERE orders.order_status = 'Cancelled')
+        / COUNT(DISTINCT orders.order_id),
+        2
+    ) AS cancelled_percent
+FROM products
+JOIN order_items ON products.product_id = order_items.product_id
+JOIN orders ON order_items.order_id = orders.order_id
+WHERE products.product_line IS NOT NULL
+GROUP BY products.product_line;
+
+-- 10. Разделите клиентов на сегменты на основе количества заказов и подсчитайте количество клиентов в каждом сегменте:
+-- сегмент High, если количество заказов больше 10;
+-- сегмент Medium, если количество заказов от 5 до 10;
+-- иначе сегмент Low
+
+WITH customer_orders AS (
+    SELECT 
+        customers.customer_id,
+        COUNT(orders.order_id) AS orders_count
+    FROM customers
+    LEFT JOIN orders ON customers.customer_id = orders.customer_id
+    GROUP BY customers.customer_id
+)
+SELECT 
+    CASE 
+        WHEN orders_count > 10 THEN 'High'
+        WHEN orders_count BETWEEN 5 AND 10 THEN 'Medium'
+        ELSE 'Low'
+    END AS segment,
+    COUNT(*)
+FROM customer_orders
+GROUP BY segment;
+
+-- 11. Для всех клиентов выведите имена, фамилии, профессии, а также длительность максимального интервала (в днях) 
+-- между двумя последовательными заказами. Необходимо исключить клиентов, у которых только один заказ или меньше.
+
+SELECT 
+    customers.first_name,
+    customers.last_name,
+    customers.job_title,
+    MAX(next_order_day - order_day) AS max_interval_days
+FROM (
+    SELECT 
+        o1.customer_id,
+        o1.order_date::DATE AS order_day,
+        MIN(o2.order_date::DATE) AS next_order_day
+    FROM orders o1
+    JOIN orders o2 
+        ON o1.customer_id = o2.customer_id 
+        AND (o2.order_date, o2.order_id) > (o1.order_date, o1.order_id)
+    GROUP BY o1.customer_id, o1.order_id, o1.order_date
+) intervals
+JOIN customers ON intervals.customer_id = customers.customer_id
+GROUP BY customers.customer_id, customers.first_name, customers.last_name, customers.job_title;
+
